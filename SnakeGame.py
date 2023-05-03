@@ -1,3 +1,5 @@
+import time
+
 import pygame
 import numpy as np
 import random
@@ -11,8 +13,11 @@ class SnakeGame:
     def __init__(self, screen_size=400, grid_size=20):
         self.screen_size = screen_size
         self.grid_size = grid_size
-        self.reset()
-
+        self.snake = [(screen_size // (2 * grid_size) * grid_size, screen_size // (2 * grid_size) * grid_size)]
+        self.direction = (grid_size, 0)
+        self.food = self.generate_food()
+        self.score = 0
+        self.previous_food_distance = np.linalg.norm(np.array(self.snake[-1]) - np.array(self.food))
     def reset(self):
         self.screen = pygame.display.set_mode((self.screen_size, self.screen_size))
         pygame.display.set_caption('Snake DQN')
@@ -36,10 +41,11 @@ class SnakeGame:
         else:
             new_direction = (self.direction[1], -self.direction[0])
 
-        new_head = (self.snake[-1][0]+new_direction[0], self.snake[-1][1]+new_direction[1])
+        new_head = (self.snake[-1][0] + new_direction[0], self.snake[-1][1] + new_direction[1])
 
-        if new_head in self.snake[:-1] or new_head[0] == 0 or new_head[1] == 0 or new_head[0] == self.screen_size//self.grid_size-1 or new_head[1] == self.screen_size//self.grid_size-1:
-            return self.get_state(), -100, True
+        if new_head in self.snake[:-1] or new_head[0] == 0 or new_head[1] == 0 or new_head[
+            0] == self.screen_size // self.grid_size - 1 or new_head[1] == self.screen_size // self.grid_size - 1:
+            return self.get_state(), -50, True  # Decreased penalty for hitting the wall
 
         self.snake.append(new_head)
         self.direction = new_direction
@@ -47,10 +53,22 @@ class SnakeGame:
         if new_head == self.food:
             self.score += 1
             self.food = self.generate_food()
+            reward = 100  # Increased reward for collecting food
         else:
             self.snake.pop(0)
+            reward = 0
 
-        return self.get_state(), 10, False
+        # Reward for getting closer to the food
+        food_distance = np.linalg.norm(np.array(new_head) - np.array(self.food))
+        reward_distance = 10 * (self.previous_food_distance - food_distance)
+        if food_distance < self.previous_food_distance:
+            reward += reward_distance
+        else:
+            reward -= reward_distance
+
+        self.previous_food_distance = food_distance
+
+        return self.get_state(), reward, False
 
     def is_near_wall(self):
         head = self.snake[-1]
@@ -60,14 +78,21 @@ class SnakeGame:
         return 0
 
     def get_state(self):
-        snake_segments = [segment for part in self.snake[:-1] for segment in part]
-        padding = [0] * (24 - len(snake_segments))
-        return [
-            self.direction[0], self.direction[1],
-            self.food[0], self.food[1],
-            self.snake[-1][0], self.snake[-1][1]
-        ] + snake_segments + padding + [self.is_near_wall()]
+        state = [[0 for _ in range(self.screen_size // self.grid_size)] for _ in
+                 range(self.screen_size // self.grid_size)]
 
+        for segment in self.snake:
+            state[segment[1]][segment[0]] = 1
+
+        state[self.food[1]][self.food[0]] = 2
+
+        for i in range(self.screen_size // self.grid_size):
+            state[0][i] = 3
+            state[i][0] = 3
+            state[self.screen_size // self.grid_size - 1][i] = 3
+            state[i][self.screen_size // self.grid_size - 1] = 3
+
+        return state
 
     def render(self):
         self.screen.fill((0, 0, 0))
@@ -93,7 +118,8 @@ class SnakeGame:
 
 
 def preprocess_state(state):
-    return np.reshape(state[:13], [1, 13])
+    return np.reshape(state, (1, -1))
+
 
 def latest_weights_file():
     list_of_files = glob.glob('*.h5')
@@ -117,8 +143,8 @@ def delete_weights_file(file_name):
 def main():
     pygame.init()
     game = SnakeGame()
-    agent = DQNAgent()
-    batch_size = 128
+    agent = DQNAgent(game)
+    batch_size = 32
 
     latest_file = latest_weights_file()
     if latest_file is not None:
@@ -138,7 +164,6 @@ def main():
         done = False
         while not done:
             game.render()
-            pygame.time.wait(100)
             action = agent.act(state)
             next_state, reward, done = game.step(action)
             next_state = preprocess_state(next_state)
